@@ -1,5 +1,6 @@
 import { Server as HttpServer } from 'http';
 import { Server, Socket } from 'socket.io';
+import mongoose from 'mongoose';
 import { config } from './config/env';
 import { GroupMessage } from './models/GroupMessage';
 import { ActiveUser } from './models/ActiveUser';
@@ -138,35 +139,40 @@ export const initSocket = (httpServer: HttpServer) => {
     socket.on('find_match', async (data: { senderId: string; moodId: string }) => {
       try {
         const { senderId, moodId } = data;
+        console.log(`[find_match] senderId=${senderId}, moodId=${moodId}`);
         
-        // Find matching active users
-        let query: any = { userId: { $ne: senderId } };
+        // Cast senderId to ObjectId for proper comparison
+        const senderObjectId = new mongoose.Types.ObjectId(senderId);
+
+        // Find matching active users (exclude the sender)
+        const query: any = { userId: { $ne: senderObjectId } };
         if (moodId && moodId !== 'any') {
           query.moodId = moodId;
         }
 
         const activeUsers = await ActiveUser.find(query);
-        const expiresAt = new Date(Date.now() + 15 * 1000); // 15 seconds
+        console.log(`[find_match] Found ${activeUsers.length} active users matching query`);
 
+        const expiresAt = new Date(Date.now() + 15 * 1000); // 15 seconds
         const sender = await User.findById(senderId).select('alias username avatarId mood');
 
         let sentCount = 0;
 
-        for (const user of activeUsers) {
+        for (const activeUser of activeUsers) {
           // Check for existing pending request
-          const existing = await ConnectionRequest.findOne({ senderId, receiverId: user.userId, status: 'pending' });
+          const existing = await ConnectionRequest.findOne({ senderId: senderObjectId, receiverId: activeUser.userId, status: 'pending' });
           if (existing) continue;
 
           const req = new ConnectionRequest({
-            senderId,
-            receiverId: user.userId,
+            senderId: senderObjectId,
+            receiverId: activeUser.userId,
             status: 'pending',
             expiresAt,
           });
           await req.save();
 
           // Emit to receiver
-          io.to(`user_${user.userId}`).emit('receive_connect_request', {
+          io.to(`user_${activeUser.userId}`).emit('receive_connect_request', {
             id: req._id,
             senderId: senderId,
             alias: sender?.alias,
@@ -178,10 +184,13 @@ export const initSocket = (httpServer: HttpServer) => {
           sentCount++;
         }
 
+        console.log(`[find_match] Sent ${sentCount} requests`);
         socket.emit('find_match_result', { sentCount });
 
       } catch (err) {
         console.error('find_match error:', err);
+        // Always respond so client doesn't hang
+        socket.emit('find_match_result', { sentCount: 0 });
       }
     });
 
