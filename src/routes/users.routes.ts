@@ -45,6 +45,21 @@ router.put('/me', authenticate, async (req: AuthRequest, res: Response): Promise
   }
 });
 
+// GET /users/active
+router.get('/active', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { ActiveUser } = await import('../models/ActiveUser');
+    const activeUsers = await ActiveUser.find({ userId: { $ne: req.user?.id } })
+      .populate('userId', 'alias username avatarId')
+      .lean();
+    
+    res.json({ success: true, data: activeUsers });
+  } catch (error) {
+    console.error('Fetch active users error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 // GET /users/suggested
 router.get('/suggested', (_req: Request, res: Response) => {
   res.json({

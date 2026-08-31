@@ -18,7 +18,7 @@ import authRoutes from './routes/auth.routes';
 import usersRoutes from './routes/users.routes';
 import momentsRoutes from './routes/moments.routes';
 import chatsRoutes from './routes/chats.routes';
-import voiceRoutes from './routes/voice.routes';
+import groupsRoutes from './routes/groups.routes';
 import moderationRoutes from './routes/moderation.routes';
 import onboardingRoutes from './routes/onboarding.routes';
 
@@ -47,7 +47,7 @@ app.use('/auth', authRoutes);
 app.use('/users', usersRoutes);
 app.use('/moments', momentsRoutes);
 app.use('/chats', chatsRoutes);
-app.use('/voice', voiceRoutes);
+app.use('/groups', groupsRoutes);
 app.use('/moderation', moderationRoutes);
 app.use('/onboarding', onboardingRoutes);
 
