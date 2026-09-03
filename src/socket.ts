@@ -221,9 +221,15 @@ export const initSocket = (httpServer: HttpServer) => {
           { status: 'cancelled_matched' }
         );
 
-        // Create Chat
-        const chat = new Chat({ participants: [req.senderId, req.receiverId] });
-        await chat.save();
+        // Check if chat already exists
+        let chat = await Chat.findOne({
+          participants: { $all: [req.senderId, req.receiverId], $size: 2 }
+        });
+
+        if (!chat) {
+          chat = new Chat({ participants: [req.senderId, req.receiverId] });
+          await chat.save();
+        }
 
         // Notify both users to join the chat
         io.to(`user_${req.senderId}`).emit('connect_request_accepted', { chatId: chat._id });
