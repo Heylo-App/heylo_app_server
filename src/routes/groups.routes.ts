@@ -116,7 +116,10 @@ router.get('/invites', authenticate, async (req: AuthRequest, res: Response): Pr
       .sort({ createdAt: -1 })
       .lean();
     
-    res.json({ success: true, data: invites });
+    // Filter out invites where the group or inviter has been deleted
+    const validInvites = invites.filter((inv: any) => inv.groupId && inv.inviterId);
+    
+    res.json({ success: true, data: validInvites });
   } catch (error) {
     console.error('List invites error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
