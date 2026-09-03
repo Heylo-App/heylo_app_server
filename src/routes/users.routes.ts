@@ -60,6 +60,31 @@ router.get('/active', authenticate, async (req: AuthRequest, res: Response): Pro
   }
 });
 
+// GET /users/search
+router.get('/search', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const q = req.query.q as string;
+    if (!q) {
+      res.json({ success: true, data: [] });
+      return;
+    }
+
+    // Search by username, case-insensitive, limiting to top 3
+    const users = await User.find({
+      username: { $regex: q, $options: 'i' },
+      _id: { $ne: req.user?.id }
+    })
+      .select('username alias avatarId mood')
+      .limit(3)
+      .lean();
+
+    res.json({ success: true, data: users });
+  } catch (error) {
+    console.error('Search users error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 // GET /users/suggested
 router.get('/suggested', (_req: Request, res: Response) => {
   res.json({
