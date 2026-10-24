@@ -153,14 +153,42 @@ export const initSocket = (httpServer: HttpServer) => {
     socket.on('send_connect_request', async (data: { senderId: string; receiverId: string }) => {
       try {
         const { senderId, receiverId } = data;
-        // Check if there's an existing pending request
-        const existing = await ConnectionRequest.findOne({ senderId, receiverId, status: 'pending' });
-        if (existing) return;
+        console.log(`[send_connect_request] From sender=${senderId} to receiver=${receiverId}`);
+        if (!senderId || !receiverId) {
+          console.warn('[send_connect_request] Missing senderId or receiverId');
+          return;
+        }
+
+        const senderObjectId = new mongoose.Types.ObjectId(senderId);
+        const receiverObjectId = new mongoose.Types.ObjectId(receiverId);
+
+        // Expire any stale pending requests between these two users
+        await ConnectionRequest.updateMany(
+          {
+            senderId: senderObjectId,
+            receiverId: receiverObjectId,
+            status: 'pending',
+            expiresAt: { $lte: new Date() },
+          },
+          { status: 'timeout' }
+        );
+
+        // Check if there is an active unexpired pending request
+        const existing = await ConnectionRequest.findOne({
+          senderId: senderObjectId,
+          receiverId: receiverObjectId,
+          status: 'pending',
+          expiresAt: { $gt: new Date() },
+        });
+        if (existing) {
+          console.log(`[send_connect_request] Active pending request already exists: ${existing._id}`);
+          return;
+        }
 
         const expiresAt = new Date(Date.now() + 15 * 1000); // 15 seconds
         const req = new ConnectionRequest({
-          senderId,
-          receiverId,
+          senderId: senderObjectId,
+          receiverId: receiverObjectId,
           status: 'pending',
           expiresAt,
         });
@@ -169,16 +197,18 @@ export const initSocket = (httpServer: HttpServer) => {
         // Get sender details
         const sender = await User.findById(senderId).select('alias username avatarId mood');
 
-        // Emit to receiver
-        io.to(`user_${receiverId}`).emit('receive_connect_request', {
-          id: req._id,
+        const payload = {
+          id: req._id.toString(),
           senderId: senderId,
-          alias: sender?.alias,
-          username: sender?.username,
-          avatarId: sender?.avatarId,
-          moodId: sender?.mood,
+          alias: sender?.alias || sender?.username || 'Someone',
+          username: sender?.username || '',
+          avatarId: sender?.avatarId || 'avatar-1',
+          moodId: sender?.mood || 'calm',
           expiresAt,
-        });
+        };
+
+        console.log(`[send_connect_request] Emitting receive_connect_request to user_${receiverId}`);
+        io.to(`user_${receiverId}`).emit('receive_connect_request', payload);
 
       } catch (err) {
         console.error('send_connect_request error:', err);
@@ -208,8 +238,13 @@ export const initSocket = (httpServer: HttpServer) => {
         let sentCount = 0;
 
         for (const activeUser of activeUsers) {
-          // Check for existing pending request
-          const existing = await ConnectionRequest.findOne({ senderId: senderObjectId, receiverId: activeUser.userId, status: 'pending' });
+          // Check for existing unexpired pending request
+          const existing = await ConnectionRequest.findOne({
+            senderId: senderObjectId,
+            receiverId: activeUser.userId,
+            status: 'pending',
+            expiresAt: { $gt: new Date() },
+          });
           if (existing) continue;
 
           const req = new ConnectionRequest({
@@ -222,12 +257,12 @@ export const initSocket = (httpServer: HttpServer) => {
 
           // Emit to receiver
           io.to(`user_${activeUser.userId}`).emit('receive_connect_request', {
-            id: req._id,
+            id: req._id.toString(),
             senderId: senderId,
-            alias: sender?.alias,
-            username: sender?.username,
-            avatarId: sender?.avatarId,
-            moodId: sender?.mood,
+            alias: sender?.alias || sender?.username || 'Someone',
+            username: sender?.username || '',
+            avatarId: sender?.avatarId || 'avatar-1',
+            moodId: sender?.mood || 'calm',
             expiresAt,
           });
           sentCount++;
@@ -245,16 +280,24 @@ export const initSocket = (httpServer: HttpServer) => {
 
     socket.on('accept_connect_request', async (requestId: string) => {
       try {
+        console.log(`[accept_connect_request] requestId=${requestId}`);
+        if (!requestId || !mongoose.Types.ObjectId.isValid(requestId)) {
+          console.warn('[accept_connect_request] Invalid requestId:', requestId);
+          return;
+        }
+
+        const reqObjectId = new mongoose.Types.ObjectId(requestId);
+
         // Atomic update: only succeeds if status is still 'pending'
         const req = await ConnectionRequest.findOneAndUpdate(
-          { _id: requestId, status: 'pending' },
+          { _id: reqObjectId, status: 'pending' },
           { status: 'accepted' },
           { new: true }
         );
 
         if (!req) {
-          // Request was already handled (accepted by someone else or cancelled)
-          const existingReq = await ConnectionRequest.findById(requestId);
+          console.warn(`[accept_connect_request] Request not found or not pending: ${requestId}`);
+          const existingReq = await ConnectionRequest.findById(reqObjectId);
           if (existingReq && existingReq.status === 'cancelled_matched') {
             socket.emit('connect_request_error', {
               requestId,
@@ -280,9 +323,12 @@ export const initSocket = (httpServer: HttpServer) => {
           await chat.save();
         }
 
+        const chatIdStr = chat._id.toString();
+        console.log(`[accept_connect_request] Chat ready: ${chatIdStr}. Notifying sender user_${req.senderId} and receiver user_${req.receiverId}`);
+
         // Notify both users to join the chat
-        io.to(`user_${req.senderId}`).emit('connect_request_accepted', { chatId: chat._id });
-        io.to(`user_${req.receiverId}`).emit('connect_request_accepted', { chatId: chat._id });
+        io.to(`user_${req.senderId}`).emit('connect_request_accepted', { chatId: chatIdStr });
+        io.to(`user_${req.receiverId}`).emit('connect_request_accepted', { chatId: chatIdStr });
       } catch (err) {
         console.error('accept_connect_request error:', err);
       }
@@ -290,7 +336,9 @@ export const initSocket = (httpServer: HttpServer) => {
 
     socket.on('decline_connect_request', async (requestId: string) => {
       try {
-        await ConnectionRequest.findByIdAndUpdate(requestId, { status: 'rejected' });
+        console.log(`[decline_connect_request] requestId=${requestId}`);
+        if (!requestId || !mongoose.Types.ObjectId.isValid(requestId)) return;
+        await ConnectionRequest.findByIdAndUpdate(new mongoose.Types.ObjectId(requestId), { status: 'rejected' });
       } catch (err) {
         console.error('decline_connect_request error:', err);
       }
