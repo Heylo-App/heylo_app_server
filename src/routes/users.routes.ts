@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express';
+import mongoose from 'mongoose';
 import { authenticate, AuthRequest } from '../middleware/auth.middleware';
 import { User } from '../models/User';
+import { ActiveUser } from '../models/ActiveUser';
+import { broadcastEvent } from '../socket';
 
 const router = Router();
 
@@ -48,14 +51,91 @@ router.put('/me', authenticate, async (req: AuthRequest, res: Response): Promise
 // GET /users/active
 router.get('/active', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { ActiveUser } = await import('../models/ActiveUser');
-    const activeUsers = await ActiveUser.find({ userId: { $ne: req.user?.id } })
+    const currentUserId = req.user?.id;
+    const query: any = {};
+    if (currentUserId && mongoose.Types.ObjectId.isValid(currentUserId)) {
+      query.userId = { $ne: new mongoose.Types.ObjectId(currentUserId) };
+    }
+
+    const activeUsers = await ActiveUser.find(query)
       .populate('userId', 'alias username avatarId')
+      .sort({ updatedAt: -1 })
       .lean();
     
-    res.json({ success: true, data: activeUsers });
+    // Filter out entries where the User document was not found or is null
+    const validUsers = activeUsers.filter((u: any) => u.userId != null);
+
+    // Also check current user's active status
+    let myStatus: any = { isActive: false };
+    if (currentUserId && mongoose.Types.ObjectId.isValid(currentUserId)) {
+      const myRecord = await ActiveUser.findOne({ userId: new mongoose.Types.ObjectId(currentUserId) }).lean();
+      if (myRecord) {
+        myStatus = {
+          isActive: true,
+          moodId: myRecord.moodId,
+          vibe: myRecord.vibe,
+          updatedAt: myRecord.updatedAt,
+        };
+      }
+    }
+    
+    res.json({ success: true, data: validUsers, myStatus });
   } catch (error) {
     console.error('Fetch active users error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// POST /users/active/toggle
+router.post('/active/toggle', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      res.status(401).json({ success: false, message: 'Invalid or missing user' });
+      return;
+    }
+
+    const { moodId, vibe, isActive } = req.body;
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+
+    if (isActive) {
+      if (!moodId || !vibe) {
+        res.status(400).json({ success: false, message: 'Mood and vibe are required to become active' });
+        return;
+      }
+
+      const activeRecord = await ActiveUser.findOneAndUpdate(
+        { userId: userObjectId },
+        {
+          userId: userObjectId,
+          moodId,
+          vibe,
+          socketId: 'http_active',
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      // Broadcast real-time change to all sockets
+      broadcastEvent('active_users_updated');
+
+      res.json({
+        success: true,
+        isActive: true,
+        data: activeRecord,
+      });
+    } else {
+      await ActiveUser.findOneAndDelete({ userId: userObjectId });
+
+      // Broadcast real-time change to all sockets
+      broadcastEvent('active_users_updated');
+
+      res.json({
+        success: true,
+        isActive: false,
+      });
+    }
+  } catch (error) {
+    console.error('Toggle active error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });

@@ -10,6 +10,9 @@ import { ChatMessage } from './models/ChatMessage';
 import { User } from './models/User';
 
 let io: Server;
+const disconnectTimeouts = new Map<string, NodeJS.Timeout>();
+
+export const getIO = (): Server | undefined => io;
 
 export const initSocket = (httpServer: HttpServer) => {
   io = new Server(httpServer, {
@@ -67,10 +70,26 @@ export const initSocket = (httpServer: HttpServer) => {
 
     socket.on('disconnect', async () => {
       console.log(`Socket disconnected: ${socket.id}`);
-      // Remove from ActiveUser
       try {
-        await ActiveUser.findOneAndDelete({ socketId: socket.id });
-        io.emit('active_users_updated');
+        const active = await ActiveUser.findOne({ socketId: socket.id });
+        if (active) {
+          const userIdStr = active.userId.toString();
+          if (disconnectTimeouts.has(userIdStr)) {
+            clearTimeout(disconnectTimeouts.get(userIdStr)!);
+          }
+          // 45 seconds grace period to allow app navigation/reconnecting without vanishing
+          const timer = setTimeout(async () => {
+            disconnectTimeouts.delete(userIdStr);
+            try {
+              // Delete only if socketId hasn't been updated to a newer socket
+              await ActiveUser.findOneAndDelete({ userId: active.userId, socketId: socket.id });
+              io.emit('active_users_updated');
+            } catch (err) {
+              console.error('Error removing active user after grace period:', err);
+            }
+          }, 45000);
+          disconnectTimeouts.set(userIdStr, timer);
+        }
       } catch (err) {
         console.error('Error removing active user on disconnect:', err);
       }
@@ -79,20 +98,50 @@ export const initSocket = (httpServer: HttpServer) => {
     // ── Explore / Active Users Events ───────────────────────────────
 
     // User joins with their own ID to receive direct requests
-    socket.on('register_user', (userId: string) => {
+    socket.on('register_user', async (userId: string) => {
+      if (!userId) return;
       socket.join(`user_${userId}`);
+      console.log(`Socket ${socket.id} registered user room: user_${userId}`);
+
+      // Clear any pending disconnect cleanup timer for this user
+      if (disconnectTimeouts.has(userId)) {
+        clearTimeout(disconnectTimeouts.get(userId)!);
+        disconnectTimeouts.delete(userId);
+      }
+
+      // Re-bind active user record's socketId to this new connection
+      try {
+        const updated = await ActiveUser.findOneAndUpdate(
+          { userId: new mongoose.Types.ObjectId(userId) },
+          { socketId: socket.id },
+          { new: true }
+        );
+        if (updated) {
+          io.emit('active_users_updated');
+        }
+      } catch (err) {
+        console.error('Error re-binding active user on register_user:', err);
+      }
     });
 
     socket.on('toggle_active', async (data: { userId: string; moodId: string; vibe: string; isActive: boolean }) => {
       try {
+        if (!data.userId) return;
+        const userObjId = new mongoose.Types.ObjectId(data.userId);
+
+        if (disconnectTimeouts.has(data.userId)) {
+          clearTimeout(disconnectTimeouts.get(data.userId)!);
+          disconnectTimeouts.delete(data.userId);
+        }
+
         if (data.isActive) {
           await ActiveUser.findOneAndUpdate(
-            { userId: data.userId },
-            { moodId: data.moodId, vibe: data.vibe, socketId: socket.id },
-            { upsert: true, new: true }
+            { userId: userObjId },
+            { userId: userObjId, moodId: data.moodId, vibe: data.vibe, socketId: socket.id },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
           );
         } else {
-          await ActiveUser.findOneAndDelete({ userId: data.userId });
+          await ActiveUser.findOneAndDelete({ userId: userObjId });
         }
         // Broadcast to everyone that the list changed
         io.emit('active_users_updated');
@@ -287,7 +336,7 @@ export const initSocket = (httpServer: HttpServer) => {
 };
 
 // Expose a function to broadcast events to all connected clients
-export const broadcastEvent = (event: string, payload: any) => {
+export const broadcastEvent = (event: string, payload?: any) => {
   if (io) {
     io.emit(event, payload);
   }
