@@ -4,6 +4,7 @@ import { authenticate, AuthRequest } from '../middleware/auth.middleware';
 import { User } from '../models/User';
 import { ActiveUser } from '../models/ActiveUser';
 import { ConnectionRequest } from '../models/ConnectionRequest';
+import { Chat } from '../models/Chat';
 import { broadcastEvent, getIO } from '../socket';
 
 const router = Router();
@@ -202,16 +203,66 @@ router.get('/suggested', (_req: Request, res: Response) => {
 });
 
 // GET /users/:id
-router.get('/:id', (req: Request, res: Response) => {
-  res.json({
-    success: true,
-    data: {
-      id: req.params['id'],
-      name: 'Test User',
-      avatar: null,
-      mood: null,
-    },
-  });
+router.get('/:id', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.params['id'] as string;
+    if (!userId || typeof userId !== 'string' || !mongoose.Types.ObjectId.isValid(userId)) {
+      res.status(400).json({ success: false, message: 'Invalid user ID' });
+      return;
+    }
+
+    const user = await User.findById(userId).select('-password').lean();
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    // Check if user is active
+    const active = await ActiveUser.findOne({ userId: user._id }).lean();
+
+    // Check if an existing chat already exists between the users
+    let existingChatId: string | null = null;
+    if (req.user?.id) {
+      const chat = await Chat.findOne({
+        participants: {
+          $all: [
+            new mongoose.Types.ObjectId(req.user.id),
+            new mongoose.Types.ObjectId(userId),
+          ],
+          $size: 2,
+        },
+      })
+        .select('_id')
+        .lean();
+
+      if (chat) {
+        existingChatId = chat._id.toString();
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        id: user._id.toString(),
+        username: user.username || '',
+        alias: user.alias || user.username || 'Anonymous',
+        avatarId: user.avatarId || 'avatar-1',
+        mood: user.mood || 'calm',
+        needs: user.needs || [],
+        language: user.language || 'English',
+        age: user.age || null,
+        reputation: user.reputation || 0,
+        createdAt: user.createdAt,
+        isActive: Boolean(active),
+        activeVibe: active?.vibe || null,
+        activeMoodId: active?.moodId || null,
+        existingChatId,
+      },
+    });
+  } catch (error) {
+    console.error('Fetch user error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
 });
 
 export default router;

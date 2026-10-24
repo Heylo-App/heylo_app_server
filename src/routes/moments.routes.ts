@@ -19,6 +19,7 @@ const formatMoment = async (momentDoc: any, currentUserId: string | undefined) =
     
   const comments = commentsDocs.map((c: any) => ({
     id: c._id.toString(),
+    authorId: c.authorId?._id?.toString() || '',
     author: c.authorId?.alias || c.authorId?.name || 'Unknown',
     avatarId: c.authorId?.avatarId || 'avatar-1',
     text: c.text,
@@ -31,6 +32,7 @@ const formatMoment = async (momentDoc: any, currentUserId: string | undefined) =
   return {
     id: momentDoc._id.toString(),
     author: {
+      id: author?._id?.toString() || '',
       name: author?.alias || author?.name || 'Unknown',
       handle: author?.username ? `@${author.username}` : `@user`,
       avatarId: author?.avatarId || 'avatar-1',

@@ -1,9 +1,46 @@
 import { Router, Response } from 'express';
+import mongoose from 'mongoose';
 import { authenticate, AuthRequest } from '../middleware/auth.middleware';
 import { Chat } from '../models/Chat';
 import { ChatMessage } from '../models/ChatMessage';
 
 const router = Router();
+
+// POST /chats (Create or get existing 1-on-1 chat with recipient)
+router.post('/', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { recipientId } = req.body;
+    const currentUserId = req.user?.id;
+
+    if (!recipientId || !mongoose.Types.ObjectId.isValid(recipientId)) {
+      res.status(400).json({ success: false, message: 'Valid recipient ID is required' });
+      return;
+    }
+
+    if (recipientId === currentUserId) {
+      res.status(400).json({ success: false, message: 'Cannot start chat with yourself' });
+      return;
+    }
+
+    const currentObjId = new mongoose.Types.ObjectId(currentUserId);
+    const recipientObjId = new mongoose.Types.ObjectId(recipientId);
+
+    let chat = await Chat.findOne({
+      participants: { $all: [currentObjId, recipientObjId], $size: 2 },
+    }).populate('participants', 'alias username avatarId');
+
+    if (!chat) {
+      chat = new Chat({ participants: [currentObjId, recipientObjId] });
+      await chat.save();
+      await chat.populate('participants', 'alias username avatarId');
+    }
+
+    res.json({ success: true, data: chat });
+  } catch (error) {
+    console.error('Create or get chat error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 
 // GET /chats
 router.get('/', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
