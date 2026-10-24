@@ -20,6 +20,25 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response): Promise<v
   }
 });
 
+// GET /chats/:id
+router.get('/:id', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const chat = await Chat.findOne({ _id: req.params['id'], participants: req.user?.id })
+      .populate('participants', 'alias username avatarId')
+      .lean();
+
+    if (!chat) {
+      res.status(404).json({ success: false, message: 'Chat not found' });
+      return;
+    }
+
+    res.json({ success: true, data: chat });
+  } catch (error) {
+    console.error('Fetch chat error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 // GET /chats/:id/messages
 router.get('/:id/messages', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
   try {

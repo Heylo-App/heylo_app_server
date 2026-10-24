@@ -3,7 +3,8 @@ import mongoose from 'mongoose';
 import { authenticate, AuthRequest } from '../middleware/auth.middleware';
 import { User } from '../models/User';
 import { ActiveUser } from '../models/ActiveUser';
-import { broadcastEvent } from '../socket';
+import { ConnectionRequest } from '../models/ConnectionRequest';
+import { broadcastEvent, getIO } from '../socket';
 
 const router = Router();
 
@@ -104,13 +105,16 @@ router.post('/active/toggle', authenticate, async (req: AuthRequest, res: Respon
         return;
       }
 
+      const existing = await ActiveUser.findOne({ userId: userObjectId });
+      const socketId = existing?.socketId && existing.socketId !== 'http_active' ? existing.socketId : 'http_active';
+
       const activeRecord = await ActiveUser.findOneAndUpdate(
         { userId: userObjectId },
         {
           userId: userObjectId,
           moodId,
           vibe,
-          socketId: 'http_active',
+          socketId,
         },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
@@ -125,6 +129,30 @@ router.post('/active/toggle', authenticate, async (req: AuthRequest, res: Respon
       });
     } else {
       await ActiveUser.findOneAndDelete({ userId: userObjectId });
+
+      // Clean up any pending connection requests involving this user
+      const pending = await ConnectionRequest.find({
+        $or: [{ senderId: userObjectId }, { receiverId: userObjectId }],
+        status: 'pending',
+      });
+
+      if (pending.length > 0) {
+        await ConnectionRequest.updateMany(
+          { _id: { $in: pending.map((r) => r._id) } },
+          { status: 'cancelled_inactive' }
+        );
+
+        const io = getIO();
+        if (io) {
+          for (const req of pending) {
+            const otherId = req.senderId.toString() === userId ? req.receiverId.toString() : req.senderId.toString();
+            io.to(`user_${otherId}`).emit('connect_request_cancelled', {
+              requestId: req._id.toString(),
+              reason: 'User became inactive',
+            });
+          }
+        }
+      }
 
       // Broadcast real-time change to all sockets
       broadcastEvent('active_users_updated');
