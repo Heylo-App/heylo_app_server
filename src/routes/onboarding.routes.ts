@@ -16,16 +16,24 @@ router.post('/complete', authenticate, async (req: AuthRequest, res: Response): 
     }
 
     if (username) {
+      const trimmedUsername = username.trim().toLowerCase();
+      if (!/^[a-zA-Z0-9_]{3,20}$/.test(trimmedUsername)) {
+        res.status(400).json({
+          success: false,
+          message: 'Username must be 3-20 characters and contain only letters, numbers, and underscores',
+        });
+        return;
+      }
       // Check if username is already taken
-      const existing = await User.findOne({ username, _id: { $ne: user._id } });
+      const existing = await User.findOne({ username: trimmedUsername, _id: { $ne: user._id } });
       if (existing) {
         res.status(400).json({ success: false, message: 'Username is already taken' });
         return;
       }
-      user.username = username;
+      user.username = trimmedUsername;
     }
 
-    if (alias) user.alias = alias;
+    if (alias) user.alias = alias.trim();
     if (avatarId) user.avatarId = avatarId;
     if (mood) user.mood = mood;
     if (needs) user.needs = needs;
@@ -39,6 +47,8 @@ router.post('/complete', authenticate, async (req: AuthRequest, res: Response): 
       success: true,
       data: {
         id: user.id,
+        email: user.email,
+        username: user.username,
         alias: user.alias,
         avatarId: user.avatarId,
         mood: user.mood,
@@ -51,8 +61,12 @@ router.post('/complete', authenticate, async (req: AuthRequest, res: Response): 
       },
       message: 'Onboarding completed',
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Onboarding error:', error);
+    if (error?.code === 11000) {
+      res.status(400).json({ success: false, message: 'Username is already taken' });
+      return;
+    }
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });

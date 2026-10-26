@@ -14,15 +14,20 @@ const formatMoment = async (momentDoc: any, currentUserId: string | undefined) =
   // Fetch comments for this moment
   const commentsDocs = await CommentModel.find({ momentId: momentDoc._id })
     .sort({ createdAt: 1 })
-    .populate('authorId', 'alias avatarId name')
+    .populate('authorId', 'alias avatarId name username')
     .lean();
     
   const comments = commentsDocs.map((c: any) => ({
     id: c._id.toString(),
     authorId: c.authorId?._id?.toString() || '',
     author: c.authorId?.alias || c.authorId?.name || 'Unknown',
+    username: c.authorId?.username || '',
     avatarId: c.authorId?.avatarId || 'avatar-1',
     text: c.text,
+    parentId: c.parentId ? c.parentId.toString() : null,
+    replyToUser: c.replyToUser || null,
+    likes: c.likes?.length || 0,
+    isLiked: currentUserId ? (c.likes || []).some((id: any) => id.toString() === currentUserId) : false,
     timestamp: c.createdAt.toISOString(),
   }));
 
@@ -134,7 +139,7 @@ router.post('/:id/like', authenticate, async (req: AuthRequest, res: Response): 
       .populate('authorId', 'alias name username avatarId')
       .lean();
       
-    // Broadcast generic update without user specific fields like `isMine` or `isLiked` (clients handle this locally)
+    // Broadcast generic update
     const formattedEvent = await formatMoment(populatedMoment, undefined);
     broadcastEvent('moment:updated', { id: momentId, likes: formattedEvent.likes, comments: formattedEvent.comments });
 
@@ -156,9 +161,9 @@ router.post('/:id/comments', authenticate, async (req: AuthRequest, res: Respons
   try {
     const momentId = req.params['id'];
     const userId = req.user?.id;
-    const { text } = req.body;
+    const { text, parentId, replyToUser } = req.body;
     
-    if (!text) {
+    if (!text || typeof text !== 'string' || !text.trim()) {
       res.status(400).json({ success: false, message: 'Comment text is required' });
       return;
     }
@@ -172,7 +177,14 @@ router.post('/:id/comments', authenticate, async (req: AuthRequest, res: Respons
     await CommentModel.create({
       momentId: new mongoose.Types.ObjectId(momentId as string),
       authorId: userId,
-      text,
+      text: text.trim(),
+      parentId: parentId && mongoose.Types.ObjectId.isValid(parentId) ? new mongoose.Types.ObjectId(parentId as string) : null,
+      replyToUser: replyToUser ? {
+        id: replyToUser.id,
+        username: replyToUser.username,
+        name: replyToUser.name,
+      } : undefined,
+      likes: [],
     });
 
     const populatedMoment = await MomentModel.findById(momentId)
@@ -191,6 +203,60 @@ router.post('/:id/comments', authenticate, async (req: AuthRequest, res: Respons
   } catch (error) {
     console.error('Error adding comment:', error);
     res.status(500).json({ success: false, message: 'Failed to add comment' });
+  }
+});
+
+// POST /moments/:momentId/comments/:commentId/like
+router.post('/:momentId/comments/:commentId/like', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const momentId = req.params['momentId'];
+    const commentId = req.params['commentId'];
+    const userId = req.user?.id;
+    
+    if (!userId) {
+      res.status(401).json({ success: false, message: 'Unauthorized' });
+      return;
+    }
+
+    const comment = await CommentModel.findOne({ _id: commentId, momentId });
+    if (!comment) {
+      res.status(404).json({ success: false, message: 'Comment not found' });
+      return;
+    }
+
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    const likeIndex = (comment.likes || []).findIndex((id: any) => id.toString() === userId);
+    
+    if (likeIndex === -1) {
+      comment.likes = comment.likes || [];
+      comment.likes.push(userObjectId);
+    } else {
+      comment.likes.splice(likeIndex, 1);
+    }
+
+    await comment.save();
+
+    const populatedMoment = await MomentModel.findById(momentId)
+      .populate('authorId', 'alias name username avatarId')
+      .lean();
+
+    if (!populatedMoment) {
+      res.status(404).json({ success: false, message: 'Moment not found' });
+      return;
+    }
+
+    const formattedEvent = await formatMoment(populatedMoment, undefined);
+    broadcastEvent('moment:updated', { id: momentId, likes: formattedEvent.likes, comments: formattedEvent.comments });
+
+    const formatted = await formatMoment(populatedMoment, userId);
+
+    res.json({
+      success: true,
+      data: formatted,
+    });
+  } catch (error) {
+    console.error('Error toggling comment like:', error);
+    res.status(500).json({ success: false, message: 'Failed to toggle comment like' });
   }
 });
 

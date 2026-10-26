@@ -43,7 +43,10 @@ export const initSocket = (httpServer: HttpServer) => {
       async (data: {
         groupId: string;
         senderId: string;
-        text: string;
+        text?: string;
+        messageType?: "text" | "audio";
+        audioData?: string;
+        audioDuration?: number;
         senderAlias: string;
         senderUsername: string;
         senderAvatarId: string;
@@ -52,18 +55,36 @@ export const initSocket = (httpServer: HttpServer) => {
           const {
             groupId,
             senderId,
-            text,
             senderAlias,
             senderUsername,
             senderAvatarId,
           } = data;
-          const msg = new GroupMessage({ groupId, senderId, text });
+          const messageType = data.messageType || "text";
+          const text =
+            data.text || (messageType === "audio" ? "🎤 Voice message" : "");
+          const audioData = data.audioData;
+          const audioDuration = data.audioDuration;
+
+          if (messageType === "text" && !text.trim()) return;
+          if (messageType === "audio" && !audioData) return;
+
+          const msg = new GroupMessage({
+            groupId,
+            senderId,
+            text,
+            messageType,
+            audioData,
+            audioDuration,
+          });
           await msg.save();
 
           io.to(`group_${groupId}`).emit("receive_group_message", {
             _id: msg._id,
             groupId: msg.groupId,
             text: msg.text,
+            messageType: msg.messageType,
+            audioData: msg.audioData,
+            audioDuration: msg.audioDuration,
             createdAt: msg.createdAt,
             senderId: {
               _id: senderId,
@@ -622,15 +643,34 @@ export const initSocket = (httpServer: HttpServer) => {
       async (data: {
         chatId: string;
         senderId: string;
-        text: string;
+        text?: string;
+        messageType?: "text" | "audio";
+        audioData?: string;
+        audioDuration?: number;
         senderAlias?: string;
         senderAvatarId?: string;
       }) => {
         try {
-          const { chatId, senderId, text } = data;
-          if (!chatId || !senderId || !text) return;
+          const { chatId, senderId } = data;
+          if (!chatId || !senderId) return;
 
-          const msg = new ChatMessage({ chatId, senderId, text });
+          const messageType = data.messageType || "text";
+          const text =
+            data.text || (messageType === "audio" ? "🎤 Voice message" : "");
+          const audioData = data.audioData;
+          const audioDuration = data.audioDuration;
+
+          if (messageType === "text" && !text.trim()) return;
+          if (messageType === "audio" && !audioData) return;
+
+          const msg = new ChatMessage({
+            chatId,
+            senderId,
+            text,
+            messageType,
+            audioData,
+            audioDuration,
+          });
           await msg.save();
 
           await Chat.findByIdAndUpdate(chatId, {
@@ -642,6 +682,9 @@ export const initSocket = (httpServer: HttpServer) => {
             _id: msg._id,
             chatId,
             text,
+            messageType,
+            audioData,
+            audioDuration,
             createdAt: msg.createdAt,
             senderId: {
               _id: senderId,

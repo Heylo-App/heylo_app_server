@@ -20,8 +20,38 @@ router.put('/me', authenticate, async (req: AuthRequest, res: Response): Promise
       return;
     }
 
-    if (alias !== undefined) user.alias = alias;
-    if (username !== undefined) user.username = username;
+    // Validate username if provided
+    if (username !== undefined) {
+      const trimmedUsername = typeof username === 'string' ? username.trim().toLowerCase() : '';
+      if (trimmedUsername) {
+        if (!/^[a-zA-Z0-9_]{3,20}$/.test(trimmedUsername)) {
+          res.status(400).json({
+            success: false,
+            message: 'Username must be 3-20 characters and contain only letters, numbers, and underscores',
+          });
+          return;
+        }
+
+        if (trimmedUsername !== user.username) {
+          const existing = await User.findOne({ 
+            username: trimmedUsername, 
+            _id: { $ne: user._id } 
+          });
+          if (existing) {
+            res.status(400).json({ success: false, message: 'Username is already taken' });
+            return;
+          }
+          user.username = trimmedUsername;
+        }
+      } else if (!user.username) {
+        res.status(400).json({ success: false, message: 'Username cannot be empty' });
+        return;
+      }
+    }
+
+    if (alias !== undefined && typeof alias === 'string' && alias.trim()) {
+      user.alias = alias.trim();
+    }
     if (language !== undefined) user.language = language;
     if (mood !== undefined) user.mood = mood;
     if (avatarId !== undefined) user.avatarId = avatarId;
@@ -32,6 +62,7 @@ router.put('/me', authenticate, async (req: AuthRequest, res: Response): Promise
       success: true,
       data: {
         id: user.id,
+        email: user.email,
         username: user.username,
         alias: user.alias,
         avatarId: user.avatarId,
@@ -44,8 +75,12 @@ router.put('/me', authenticate, async (req: AuthRequest, res: Response): Promise
         isOnboarded: user.isOnboarded,
       }
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Update profile error:', error);
+    if (error?.code === 11000) {
+      res.status(400).json({ success: false, message: 'Username is already taken' });
+      return;
+    }
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
@@ -173,23 +208,69 @@ router.post('/active/toggle', authenticate, async (req: AuthRequest, res: Respon
 router.get('/search', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const q = req.query.q as string;
+    const limit = parseInt(req.query.limit as string) || 8;
     if (!q) {
       res.json({ success: true, data: [] });
       return;
     }
 
-    // Search by username, case-insensitive, limiting to top 3
+    // Search by username or alias, case-insensitive
     const users = await User.find({
-      username: { $regex: q, $options: 'i' },
+      $or: [
+        { username: { $regex: q, $options: 'i' } },
+        { alias: { $regex: q, $options: 'i' } },
+      ],
       _id: { $ne: req.user?.id }
     })
       .select('username alias avatarId mood')
-      .limit(3)
+      .limit(limit)
       .lean();
 
-    res.json({ success: true, data: users });
+    const formatted = users.map((u: any) => ({
+      id: u._id.toString(),
+      username: u.username,
+      alias: u.alias,
+      avatarId: u.avatarId,
+      mood: u.mood,
+    }));
+
+    res.json({ success: true, data: formatted });
   } catch (error) {
     console.error('Search users error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// GET /users/by-username/:username
+router.get('/by-username/:username', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const username = req.params['username'] as string;
+    if (!username) {
+      res.status(400).json({ success: false, message: 'Username is required' });
+      return;
+    }
+
+    const user = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i' } })
+      .select('-password')
+      .lean();
+
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        id: user._id.toString(),
+        username: user.username || '',
+        alias: user.alias || user.username || 'Anonymous',
+        avatarId: user.avatarId || 'avatar-1',
+        mood: user.mood || 'calm',
+      },
+    });
+  } catch (error) {
+    console.error('Fetch user by username error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });

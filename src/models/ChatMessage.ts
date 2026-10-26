@@ -4,6 +4,9 @@ export interface IChatMessage extends Document {
   chatId: mongoose.Types.ObjectId;
   senderId: mongoose.Types.ObjectId;
   text: string;
+  messageType?: 'text' | 'audio';
+  audioData?: string;
+  audioDuration?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -12,9 +15,13 @@ const ChatMessageSchema = new Schema<IChatMessage>(
   {
     chatId: { type: Schema.Types.ObjectId, ref: 'Chat', required: true },
     senderId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-    text: { type: String, required: true },
+    text: { type: String, default: '' },
+    messageType: { type: String, enum: ['text', 'audio'], default: 'text' },
+    audioData: { type: String },
+    audioDuration: { type: Number },
   },
   { timestamps: true }
 );
 
 export const ChatMessage = mongoose.model<IChatMessage>('ChatMessage', ChatMessageSchema);
+

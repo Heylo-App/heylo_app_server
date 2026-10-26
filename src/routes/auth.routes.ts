@@ -20,7 +20,7 @@ const generateTokens = (userId: string) => {
 // POST /auth/register
 router.post('/register', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { email, password } = req.body;
+    const { email, password, avatarId } = req.body;
 
     if (!email || !password) {
       res.status(400).json({ success: false, message: 'Email and password are required' });
@@ -34,7 +34,11 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = new User({ email, password: hashedPassword });
+    const user = new User({
+      email,
+      password: hashedPassword,
+      avatarId: avatarId || 'avatar-1',
+    });
     await user.save();
 
     const tokens = generateTokens(user.id);
@@ -46,6 +50,7 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
         id: user.id,
         email: user.email,
         username: user.username,
+        avatarId: user.avatarId,
         isOnboarded: user.isOnboarded,
       }
     });
@@ -88,11 +93,14 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
       ...tokens,
       user: {
         id: user.id,
+        email: user.email,
         username: user.username,
         alias: user.alias,
         avatarId: user.avatarId,
         mood: user.mood,
         needs: user.needs,
+        language: user.language,
+        age: user.age,
         reputation: user.reputation,
         createdAt: user.createdAt,
         isOnboarded: user.isOnboarded,
@@ -145,6 +153,7 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response): Promise
       success: true,
       data: {
         id: user.id,
+        email: user.email,
         username: user.username,
         alias: user.alias,
         avatarId: user.avatarId,
