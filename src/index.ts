@@ -21,6 +21,7 @@ import chatsRoutes from './routes/chats.routes';
 import groupsRoutes from './routes/groups.routes';
 import moderationRoutes from './routes/moderation.routes';
 import onboardingRoutes from './routes/onboarding.routes';
+import activityRoutes from './routes/activity.routes';
 
 const app = express();
 
@@ -50,6 +51,7 @@ app.use('/chats', chatsRoutes);
 app.use('/groups', groupsRoutes);
 app.use('/moderation', moderationRoutes);
 app.use('/onboarding', onboardingRoutes);
+app.use('/activity', activityRoutes);
 
 // ---------------------------------------------------------------------------
 // Error handling

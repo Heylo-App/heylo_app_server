@@ -722,3 +722,10 @@ export const broadcastEvent = (event: string, payload?: any) => {
     io.emit(event, payload);
   }
 };
+
+// Expose a function to send events to a specific user's room
+export const emitToUser = (userId: string, event: string, payload?: any) => {
+  if (io) {
+    io.to(`user_${userId}`).emit(event, payload);
+  }
+};

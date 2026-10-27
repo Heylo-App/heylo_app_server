@@ -2,8 +2,10 @@ import { Router, Response } from 'express';
 import mongoose from 'mongoose';
 import { MomentModel } from '../models/Moment';
 import { CommentModel } from '../models/Comment';
+import { User } from '../models/User';
 import { authenticate, AuthRequest } from '../middleware/auth.middleware';
 import { broadcastEvent } from '../socket';
+import { createAndSendActivity } from '../utils/activity';
 
 const router = Router();
 
@@ -73,6 +75,32 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /moments/:id
+router.get('/:id', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const momentId = req.params['id'] as string;
+    if (!momentId || typeof momentId !== 'string' || !mongoose.Types.ObjectId.isValid(momentId)) {
+      res.status(400).json({ success: false, message: 'Invalid moment ID' });
+      return;
+    }
+
+    const moment = await MomentModel.findById(momentId)
+      .populate('authorId', 'alias name username avatarId')
+      .lean();
+
+    if (!moment) {
+      res.status(404).json({ success: false, message: 'Moment not found' });
+      return;
+    }
+
+    const formatted = await formatMoment(moment, req.user?.id);
+    res.json({ success: true, data: formatted });
+  } catch (error) {
+    console.error('Error fetching moment by ID:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch moment' });
+  }
+});
+
 // POST /moments
 router.post('/', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -124,8 +152,9 @@ router.post('/:id/like', authenticate, async (req: AuthRequest, res: Response): 
     }
 
     const likeIndex = moment.likes.findIndex(id => id.toString() === userId);
+    const wasLiked = likeIndex === -1;
     
-    if (likeIndex === -1) {
+    if (wasLiked) {
       // Add like
       moment.likes.push(userId as any);
     } else {
@@ -134,6 +163,17 @@ router.post('/:id/like', authenticate, async (req: AuthRequest, res: Response): 
     }
 
     await moment.save();
+
+    // Trigger activity notification if someone else liked the post
+    if (wasLiked && moment.authorId && moment.authorId.toString() !== userId) {
+      createAndSendActivity({
+        recipientId: moment.authorId,
+        actorId: userId,
+        type: 'like_moment',
+        momentId: moment._id,
+        snippet: moment.content,
+      }).catch((e) => console.error('[Activity] Failed to send moment like activity', e));
+    }
 
     const populatedMoment = await MomentModel.findById(momentId)
       .populate('authorId', 'alias name username avatarId')
@@ -174,7 +214,7 @@ router.post('/:id/comments', authenticate, async (req: AuthRequest, res: Respons
       return;
     }
 
-    await CommentModel.create({
+    const newComment = await CommentModel.create({
       momentId: new mongoose.Types.ObjectId(momentId as string),
       authorId: userId,
       text: text.trim(),
@@ -186,6 +226,77 @@ router.post('/:id/comments', authenticate, async (req: AuthRequest, res: Respons
       } : undefined,
       likes: [],
     });
+
+    // Notify users: mentions, replies, and moment author
+    const notifiedUserIds = new Set<string>();
+    if (userId) notifiedUserIds.add(userId);
+
+    // 1. Mentions (@username)
+    const mentionRegex = /@([a-zA-Z0-9_]{3,20})/g;
+    const mentions: string[] = Array.from(
+      new Set(Array.from(text.matchAll(mentionRegex), (m) => m[1]?.toLowerCase()))
+    ).filter((u): u is string => Boolean(u));
+    if (mentions.length > 0 && userId) {
+      const mentionedUsers = await User.find({ username: { $in: mentions } }).select('_id');
+      for (const mu of mentionedUsers) {
+        const muId = mu._id.toString();
+        if (!notifiedUserIds.has(muId)) {
+          notifiedUserIds.add(muId);
+          createAndSendActivity({
+            recipientId: muId,
+            actorId: userId,
+            type: 'mention',
+            momentId: moment._id,
+            commentId: newComment._id,
+            snippet: text,
+          }).catch((e) => console.error('[Activity] Failed mention activity', e));
+        }
+      }
+    }
+
+    // 2. Direct reply to user or parent comment author
+    const targetReplyUserId = replyToUser?.id;
+    if (targetReplyUserId && userId && !notifiedUserIds.has(targetReplyUserId)) {
+      notifiedUserIds.add(targetReplyUserId);
+      createAndSendActivity({
+        recipientId: targetReplyUserId,
+        actorId: userId,
+        type: 'reply_comment',
+        momentId: moment._id,
+        commentId: newComment._id,
+        snippet: text,
+      }).catch((e) => console.error('[Activity] Failed reply activity', e));
+    } else if (parentId && mongoose.Types.ObjectId.isValid(parentId) && userId) {
+      const parentComment = await CommentModel.findById(parentId).select('authorId');
+      if (parentComment?.authorId) {
+        const parentAuthorId = parentComment.authorId.toString();
+        if (!notifiedUserIds.has(parentAuthorId)) {
+          notifiedUserIds.add(parentAuthorId);
+          createAndSendActivity({
+            recipientId: parentAuthorId,
+            actorId: userId,
+            type: 'reply_comment',
+            momentId: moment._id,
+            commentId: newComment._id,
+            snippet: text,
+          }).catch((e) => console.error('[Activity] Failed parent comment reply activity', e));
+        }
+      }
+    }
+
+    // 3. Moment author (if not self and not already notified)
+    const momentAuthorId = moment.authorId ? moment.authorId.toString() : '';
+    if (momentAuthorId && userId && !notifiedUserIds.has(momentAuthorId)) {
+      notifiedUserIds.add(momentAuthorId);
+      createAndSendActivity({
+        recipientId: momentAuthorId,
+        actorId: userId,
+        type: 'comment_moment',
+        momentId: moment._id,
+        commentId: newComment._id,
+        snippet: text,
+      }).catch((e) => console.error('[Activity] Failed comment moment activity', e));
+    }
 
     const populatedMoment = await MomentModel.findById(momentId)
       .populate('authorId', 'alias name username avatarId')
@@ -226,8 +337,9 @@ router.post('/:momentId/comments/:commentId/like', authenticate, async (req: Aut
 
     const userObjectId = new mongoose.Types.ObjectId(userId);
     const likeIndex = (comment.likes || []).findIndex((id: any) => id.toString() === userId);
+    const wasLiked = likeIndex === -1;
     
-    if (likeIndex === -1) {
+    if (wasLiked) {
       comment.likes = comment.likes || [];
       comment.likes.push(userObjectId);
     } else {
@@ -235,6 +347,18 @@ router.post('/:momentId/comments/:commentId/like', authenticate, async (req: Aut
     }
 
     await comment.save();
+
+    // Trigger activity notification if someone else liked the comment
+    if (wasLiked && comment.authorId && comment.authorId.toString() !== userId && typeof momentId === 'string') {
+      createAndSendActivity({
+        recipientId: comment.authorId,
+        actorId: userId,
+        type: 'like_comment',
+        momentId,
+        commentId: comment._id,
+        snippet: comment.text,
+      }).catch((e) => console.error('[Activity] Failed to send comment like activity', e));
+    }
 
     const populatedMoment = await MomentModel.findById(momentId)
       .populate('authorId', 'alias name username avatarId')
