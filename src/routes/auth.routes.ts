@@ -75,14 +75,19 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
       $or: [{ email: identifier }, { username: identifier }]
     });
 
-    if (!user || !user.password) {
+    if (!user) {
+      res.status(401).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    if (!user.password) {
       res.status(401).json({ success: false, message: 'Invalid credentials' });
       return;
     }
 
     const isValid = await bcrypt.compare(password, user.password);
     if (!isValid) {
-      res.status(401).json({ success: false, message: 'Invalid credentials' });
+      res.status(401).json({ success: false, message: 'Invalid password' });
       return;
     }
 
@@ -122,7 +127,13 @@ router.post('/refresh', async (req: Request, res: Response): Promise<void> => {
     }
 
     const decoded = jwt.verify(refreshToken, config.jwtRefreshSecret as string) as unknown as { id: string };
-    const tokens = generateTokens(decoded.id);
+    const user = await User.findById(decoded.id);
+    if (!user) {
+      res.status(401).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    const tokens = generateTokens(user.id);
 
     res.json({
       success: true,
