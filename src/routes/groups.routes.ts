@@ -347,4 +347,78 @@ router.post('/:groupId/add-member', authenticate, async (req: AuthRequest, res: 
   }
 });
 
+// DELETE /groups/:groupId/members/:memberId (Admin removes member)
+router.delete('/:groupId/members/:memberId', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { groupId, memberId } = req.params;
+    const group = await Group.findById(groupId);
+    if (!group) {
+      res.status(404).json({ success: false, message: 'Group not found' });
+      return;
+    }
+
+    if (group.adminId.toString() !== req.user?.id) {
+      res.status(403).json({ success: false, message: 'Only the group admin can remove members' });
+      return;
+    }
+
+    if (memberId === req.user?.id || memberId === group.adminId.toString()) {
+      res.status(400).json({ success: false, message: 'Admin cannot be removed from the group' });
+      return;
+    }
+
+    const memberRecord = await GroupMember.findOne({ groupId: group._id, userId: memberId });
+    if (!memberRecord) {
+      res.status(404).json({ success: false, message: 'Member not found in this group' });
+      return;
+    }
+
+    await memberRecord.deleteOne();
+    res.json({ success: true, message: 'Member removed from group' });
+  } catch (error) {
+    console.error('Remove member error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// POST /groups/:groupId/remove-member (Alternative method)
+router.post('/:groupId/remove-member', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { groupId } = req.params;
+    const memberId = req.body?.memberId;
+    if (!memberId) {
+      res.status(400).json({ success: false, message: 'memberId is required' });
+      return;
+    }
+
+    const group = await Group.findById(groupId);
+    if (!group) {
+      res.status(404).json({ success: false, message: 'Group not found' });
+      return;
+    }
+
+    if (group.adminId.toString() !== req.user?.id) {
+      res.status(403).json({ success: false, message: 'Only the group admin can remove members' });
+      return;
+    }
+
+    if (memberId === req.user?.id || memberId === group.adminId.toString()) {
+      res.status(400).json({ success: false, message: 'Admin cannot be removed from the group' });
+      return;
+    }
+
+    const memberRecord = await GroupMember.findOne({ groupId: group._id, userId: memberId });
+    if (!memberRecord) {
+      res.status(404).json({ success: false, message: 'Member not found in this group' });
+      return;
+    }
+
+    await memberRecord.deleteOne();
+    res.json({ success: true, message: 'Member removed from group' });
+  } catch (error) {
+    console.error('Remove member error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 export default router;
